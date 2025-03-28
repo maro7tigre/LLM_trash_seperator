@@ -19,7 +19,6 @@ pip install pillow
 pip install opencv-python
 pip install google-generativeai # For Google's AI
 pip install openai               # For OpenAI API
-pip install groq                 # For Groq API
 ```
 
 3. create `credentials.py` file in the root directory and add the following content:
@@ -32,7 +31,6 @@ This file should be added to .gitignore to prevent API keys from being committed
 # API keys for different providers
 GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"
 OPENAI_API_KEY = "YOUR_OPENAI_API_KEY"
-GROQ_API_KEY = "YOUR_GROQ_API_KEY"
 
 def get_api_key(provider=None):
     """
@@ -50,15 +48,12 @@ def get_api_key(provider=None):
         return GEMINI_API_KEY
     elif provider.lower() == 'openai':
         return OPENAI_API_KEY
-    elif provider.lower() == 'groq':
-        return GROQ_API_KEY
     else:
         return None
 ```
 4. replace the API keys with your own API keys. 
 - Gemini API key: https://console.cloud.google.com/apis/
 - OpenAI API key: https://platform.openai.com/settings/organization/api-keys
-- Groq API key: https://console.groq.com/keys
 
 5. unzip the `complete_dataset.rar` for example datasets with get rundom images option
 6. Run the program:
