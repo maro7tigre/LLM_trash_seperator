@@ -21,9 +21,6 @@ AVAILABLE_MODELS = {
     ],
     'Local': [
         "gemma-3-4b-it",
-        # Uncomment the following if you later run additional local models:
-        # "gemma-3-12b",
-        # "gemma-3-27b"
     ]
 }
 
