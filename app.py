@@ -60,6 +60,7 @@ class TrashAnalyzerApp:
             middle_frame,
             {
                 'upload': self.open_images,
+                'camera': self.capture_from_camera,
                 'random': self.get_random_images,
                 'clear': self.clear_images,
                 'select': self.on_file_select
@@ -160,6 +161,41 @@ class TrashAnalyzerApp:
         
         # Update status
         self.config_widgets['status_var'].set(f"Loaded {count} images")
+    
+    def capture_from_camera(self):
+        """Capture image from camera"""
+        # Create captured_images folder if it doesn't exist
+        captures_dir = os.path.join(".", "captured_images")
+        
+        # Display status
+        self.config_widgets['status_var'].set("Opening camera...")
+        self.root.update()
+        
+        # Capture the image
+        image_info = image_utils.capture_image_from_camera(captures_dir)
+        
+        if not image_info:
+            self.config_widgets['status_var'].set("Camera capture failed or cancelled")
+            return
+        
+        # Clear existing images if this is the first one
+        if not self.images:
+            self.clear_images(ask=False)
+        
+        # Add to our list
+        self.images.append(image_info)
+        
+        # Add to listbox
+        self.file_listbox.insert(tk.END, image_info['name'])
+        
+        # Select this image
+        index = len(self.images) - 1
+        self.file_listbox.selection_set(index)
+        self.current_image_index = index
+        self._display_current_image()
+        
+        # Update status
+        self.config_widgets['status_var'].set("Image captured from camera")
     
     def get_random_images(self):
         """Get random images from datasets directory"""

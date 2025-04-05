@@ -40,6 +40,12 @@ def create_image_list_panel(parent, callbacks):
     
     ttk.Button(
         buttons_frame, 
+        text="Camera", 
+        command=callbacks['camera']
+    ).pack(side=tk.LEFT, padx=2)
+    
+    ttk.Button(
+        buttons_frame, 
         text="Random Images", 
         command=callbacks['random']
     ).pack(side=tk.LEFT, padx=2)

@@ -8,6 +8,7 @@ import glob
 import random
 import shutil
 from PIL import Image
+import time
 
 # MARK: - Image Loading Functions
 def load_image_from_path(path):
@@ -33,6 +34,115 @@ def load_image_from_path(path):
         }
     except Exception as e:
         print(f"Error loading image {path}: {e}")
+        return None
+
+# MARK: - Camera Functions
+def capture_image_from_camera(save_dir="."):
+    """
+    Capture an image using the camera
+    
+    Args:
+        save_dir: Directory to save the captured image
+        
+    Returns:
+        Image info dictionary or None if failed
+    """
+    try:
+        # Create save directory if it doesn't exist
+        os.makedirs(save_dir, exist_ok=True)
+        
+        # Initialize camera (0 is usually the default camera)
+        cap = cv2.VideoCapture(0)
+        
+        if not cap.isOpened():
+            print("Error: Could not open camera.")
+            return None
+        
+        # Set camera properties (optional)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        
+        # Countdown timer
+        countdown = 3
+        while countdown > 0:
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Failed to grab frame.")
+                cap.release()
+                return None
+            
+            # Display countdown
+            cv2.putText(
+                frame, 
+                f"Capturing in {countdown}...", 
+                (50, 70), 
+                cv2.FONT_HERSHEY_SIMPLEX, 
+                1, 
+                (0, 0, 255), 
+                2
+            )
+            
+            cv2.imshow("Camera Capture", frame)
+            
+            # Wait for 1 second
+            start_time = time.time()
+            while time.time() - start_time < 1:
+                if cv2.waitKey(1) & 0xFF == 27:  # ESC key to cancel
+                    cap.release()
+                    cv2.destroyAllWindows()
+                    return None
+            
+            countdown -= 1
+        
+        # Capture the image
+        ret, frame = cap.read()
+        if not ret:
+            print("Error: Failed to grab frame.")
+            cap.release()
+            cv2.destroyAllWindows()
+            return None
+        
+        # Display "CAPTURED" message
+        cv2.putText(
+            frame, 
+            "CAPTURED!", 
+            (50, 70), 
+            cv2.FONT_HERSHEY_SIMPLEX, 
+            1, 
+            (0, 255, 0), 
+            2
+        )
+        
+        cv2.imshow("Camera Capture", frame)
+        cv2.waitKey(1000)  # Display for 1 second
+        
+        # Release camera and close window
+        cap.release()
+        cv2.destroyAllWindows()
+        
+        # Generate a filename with timestamp
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"camera_{timestamp}.jpg"
+        filepath = os.path.join(save_dir, filename)
+        
+        # Save the image
+        cv2.imwrite(filepath, frame)
+        
+        # Create image info dictionary
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        return {
+            'path': filepath,
+            'name': filename,
+            'data': frame,       # Original BGR format for OpenCV
+            'display': img_rgb   # RGB format for display
+        }
+        
+    except Exception as e:
+        print(f"Error capturing image: {e}")
+        if 'cap' in locals() and cap is not None:
+            cap.release()
+        cv2.destroyAllWindows()
         return None
 
 # MARK: - Random Image Functions
@@ -62,8 +172,6 @@ def get_random_images(max_count=20):
         selected_images = image_files
     
     return selected_images
-
-
 
 # MARK: - Image Preparation for APIs
 def prepare_image_for_api(img_data, provider, max_size=None):
