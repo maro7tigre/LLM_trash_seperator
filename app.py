@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 import threading
 import cv2
+import time
 
 # Import helpers
 import ui_helper
@@ -28,6 +29,9 @@ class TrashAnalyzerApp:
         # Camera variables
         self.camera_active = False
         self.preview_active = [False]  # Using a list to make it mutable for reference
+        self.current_camera_type = "Webcam (0)"
+        self.esp32_connected = False
+        self.connection_thread = None
         
         # Initialize camera at startup
         image_utils.init_camera()
@@ -87,31 +91,16 @@ class TrashAnalyzerApp:
         self.image_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Camera controls - initially hidden
-        self.camera_controls = tk.Frame(right_panel)
-        
-        # Capture button
-        self.capture_btn = ttk.Button(
-            self.camera_controls,
-            text="Capture Photo",
-            command=self.capture_from_camera
+        self.camera_controls = ui_helper.create_camera_controls_panel(
+            right_panel,
+            {
+                'connect_webcam': self.connect_webcam,
+                'connect_esp32': self.connect_esp32,
+                'capture': self.capture_from_camera,
+                'analyze_live': self.analyze_live_camera,
+                'stop': self.stop_camera
+            }
         )
-        self.capture_btn.pack(side=tk.LEFT, padx=5, pady=5)
-        
-        # Analyze live button
-        self.analyze_live_btn = ttk.Button(
-            self.camera_controls,
-            text="Analyze Live Feed",
-            command=self.analyze_live_camera
-        )
-        self.analyze_live_btn.pack(side=tk.LEFT, padx=5, pady=5)
-        
-        # Stop camera button
-        self.stop_camera_btn = ttk.Button(
-            self.camera_controls,
-            text="Stop Camera",
-            command=self.stop_camera
-        )
-        self.stop_camera_btn.pack(side=tk.LEFT, padx=5, pady=5)
         
         # Bottom frame - Configuration and results
         bottom_frame = tk.Frame(main_frame)
@@ -183,6 +172,15 @@ class TrashAnalyzerApp:
         if self.camera_active:
             self.stop_camera()
         
+        # Cancel connection thread if running
+        if self.connection_thread and self.connection_thread.is_alive():
+            # We can't directly cancel threads in Python,
+            # but we can set a flag for the thread to check
+            self.esp32_connected = False
+            
+            # Wait briefly for thread to finish
+            self.connection_thread.join(0.5)
+        
         # Release camera resources
         image_utils.release_camera()
         
@@ -190,6 +188,127 @@ class TrashAnalyzerApp:
         self.root.destroy()
     
     # MARK: - Camera Functions
+    def connect_webcam(self, camera_type, camera_id):
+        """
+        Connect to a webcam
+        
+        Args:
+            camera_type: Type of camera (e.g., "Webcam (0)")
+            camera_id: Camera ID (e.g., "0")
+        """
+        # Disable dropdown during connection
+        self.camera_controls['camera_var'].configure(state="disabled")
+        
+        # Update status
+        self.config_widgets['status_var'].set(f"Connecting to {camera_type}...")
+        self.root.update()
+        
+        # Set camera source
+        success = image_utils.set_camera_source("webcam", camera_id=int(camera_id))
+        
+        # Re-enable dropdown
+        self.camera_controls['camera_var'].configure(state="readonly")
+        
+        if success:
+            self.config_widgets['status_var'].set(f"Connected to {camera_type}")
+            self.current_camera_type = camera_type
+            
+            # If camera was active, restart it
+            if self.camera_active:
+                self.start_camera()
+        else:
+            self.config_widgets['status_var'].set(f"Failed to connect to {camera_type}")
+    
+    def connect_esp32(self, camera_type, ip_address, connect_var):
+        """
+        Connect or disconnect ESP32 camera in a separate thread
+        
+        Args:
+            camera_type: Type of camera ("ESP32 Camera")
+            ip_address: IP address of the ESP32 camera
+            connect_var: StringVar for the connect button text
+        """
+        # Check if we're already connected - if so, disconnect
+        if self.esp32_connected:
+            # Disconnect
+            self.esp32_connected = False
+            connect_var.set("Connect")
+            
+            # Stop the camera if it was active
+            if self.camera_active:
+                self.stop_camera()
+                
+            self.config_widgets['status_var'].set("ESP32 camera disconnected")
+            return
+        
+        # Validate IP address input
+        if not ip_address:
+            messagebox.showwarning("Invalid IP", "Please enter a valid IP address")
+            return
+        
+        # Disable controls during connection
+        self.camera_controls['connect_btn'].configure(state="disabled")
+        self.camera_controls['ip_entry'].configure(state="disabled")
+        
+        # Update status
+        self.config_widgets['status_var'].set("Connecting to ESP32 camera...")
+        self.root.update()
+        
+        # Connect in a separate thread
+        def connection_thread():
+            # Set up basic camera configuration
+            success = image_utils.set_camera_source("esp32", ip_address=ip_address)
+            
+            if not success:
+                # Enable controls
+                self.root.after(0, lambda: self.camera_controls['connect_btn'].configure(state="normal"))
+                self.root.after(0, lambda: self.camera_controls['ip_entry'].configure(state="normal"))
+                self.root.after(0, lambda: self.config_widgets['status_var'].set("Failed to set up ESP32 camera"))
+                return
+            
+            # Test connection
+            success = image_utils.test_esp32_connection(ip_address)
+            
+            # Update UI based on result (in main thread)
+            if success:
+                self.root.after(0, lambda: self._on_esp32_connect_success(connect_var))
+            else:
+                self.root.after(0, lambda: self._on_esp32_connect_failure())
+        
+        # Start connection thread
+        self.connection_thread = threading.Thread(target=connection_thread, daemon=True)
+        self.connection_thread.start()
+    
+    def _on_esp32_connect_success(self, connect_var):
+        """Handle successful ESP32 camera connection"""
+        # Enable controls
+        self.camera_controls['connect_btn'].configure(state="normal")
+        self.camera_controls['ip_entry'].configure(state="normal")
+        
+        # Update connection state
+        self.esp32_connected = True
+        connect_var.set("Disconnect")
+        self.current_camera_type = "ESP32 Camera"
+        
+        # Update status
+        self.config_widgets['status_var'].set("ESP32 camera connected successfully")
+        
+        # If camera was active, restart it
+        if self.camera_active:
+            self.start_camera()
+    
+    def _on_esp32_connect_failure(self):
+        """Handle failed ESP32 camera connection"""
+        # Enable controls
+        self.camera_controls['connect_btn'].configure(state="normal")
+        self.camera_controls['ip_entry'].configure(state="normal")
+        
+        # Update connection state
+        self.esp32_connected = False
+        
+        # Update status
+        self.config_widgets['status_var'].set("Failed to connect to ESP32 camera")
+    
     def toggle_camera(self):
         """Toggle camera on/off"""
         if self.camera_active:
@@ -203,12 +322,20 @@ class TrashAnalyzerApp:
         if self.camera_active:
             return
         
+        # Special check for ESP32 camera
+        if self.camera_controls['camera_var'].get() == "ESP32 Camera" and not self.esp32_connected:
+            self.config_widgets['status_var'].set("ESP32 camera not connected. Please connect first.")
+            return
+        
         # Clear the current image display
         self.image_label.config(image='')
         
         # Update status
         self.config_widgets['status_var'].set("Starting camera...")
         self.root.update()
+        
+        # Show camera controls
+        self.camera_controls['frame'].pack(fill=tk.X, padx=5, pady=5)
         
         # Start camera preview
         success = image_utils.start_camera_preview(
@@ -219,10 +346,8 @@ class TrashAnalyzerApp:
         
         if not success:
             self.config_widgets['status_var'].set("Failed to start camera")
+            self.camera_controls['frame'].pack_forget()
             return
-        
-        # Show camera controls
-        self.camera_controls.pack(fill=tk.X, padx=5, pady=5)
         
         # Update state
         self.camera_active = True
@@ -236,8 +361,11 @@ class TrashAnalyzerApp:
         # Stop preview loop
         self.preview_active[0] = False
         
+        # Give time for preview thread to stop
+        time.sleep(0.1)
+        
         # Hide camera controls
-        self.camera_controls.pack_forget()
+        self.camera_controls['frame'].pack_forget()
         
         # Update state
         self.camera_active = False
@@ -462,7 +590,7 @@ class TrashAnalyzerApp:
         # Disable analyze button during processing
         self.config_widgets['analyze_button'].config(state=tk.DISABLED)
         if self.camera_active:
-            self.analyze_live_btn.config(state=tk.DISABLED)
+            self.camera_controls['analyze_live_btn'].config(state=tk.DISABLED)
         
         self.config_widgets['status_var'].set("Analyzing image...")
         
@@ -495,7 +623,7 @@ class TrashAnalyzerApp:
                 # Enable buttons again
                 self.root.after(0, lambda: self.config_widgets['analyze_button'].config(state=tk.NORMAL))
                 if self.camera_active:
-                    self.root.after(0, lambda: self.analyze_live_btn.config(state=tk.NORMAL))
+                    self.root.after(0, lambda: self.camera_controls['analyze_live_btn'].config(state=tk.NORMAL))
         
         # Start thread
         threading.Thread(target=analysis_thread, daemon=True).start()

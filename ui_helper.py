@@ -78,15 +78,95 @@ def create_image_list_panel(parent, callbacks):
     
     return file_listbox
 
-def create_image_display_panel(parent):
-    """Create the right panel with image display"""
-    right_panel = ttk.LabelFrame(parent, text="Selected Image")
-    right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+def create_camera_controls_panel(parent, camera_callbacks):
+    """Create camera control panel with dropdown and IP input"""
+    # Main container for camera controls
+    camera_frame = ttk.Frame(parent)
     
-    image_label = ttk.Label(right_panel)
-    image_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    # Camera source selection
+    camera_source_frame = ttk.Frame(camera_frame)
+    camera_source_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=(5, 2))
     
-    return image_label
+    ttk.Label(camera_source_frame, text="Camera:").pack(side=tk.LEFT)
+    
+    # Camera selection dropdown
+    camera_var = tk.StringVar(value="Webcam (0)")
+    camera_dropdown = ttk.Combobox(
+        camera_source_frame,
+        textvariable=camera_var,
+        values=["Webcam (0)", "Webcam (1)", "Webcam (2)", "ESP32 Camera"],
+        width=15,
+        state="readonly"
+    )
+    camera_dropdown.pack(side=tk.LEFT, padx=5)
+    
+    # IP address frame for ESP32 camera (initially hidden)
+    ip_frame = ttk.Frame(camera_frame)
+    ttk.Label(ip_frame, text="IP Address:").pack(side=tk.LEFT, padx=(0, 5))
+    ip_entry = ttk.Entry(ip_frame, width=20)
+    ip_entry.pack(side=tk.LEFT)
+    ip_entry.insert(0, "192.168.137.6")  # Default IP
+    
+    # Connect/Disconnect button
+    connect_var = tk.StringVar(value="Connect")
+    connect_btn = ttk.Button(
+        ip_frame, 
+        textvariable=connect_var,
+        command=lambda: camera_callbacks['connect_esp32'](camera_var.get(), ip_entry.get(), connect_var)
+    )
+    connect_btn.pack(side=tk.LEFT, padx=5)
+    
+    # Camera action buttons
+    button_frame = ttk.Frame(camera_frame)
+    button_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
+    
+    capture_btn = ttk.Button(
+        button_frame,
+        text="Capture Photo",
+        command=camera_callbacks['capture']
+    )
+    capture_btn.pack(side=tk.LEFT, padx=2, pady=2)
+    
+    analyze_live_btn = ttk.Button(
+        button_frame,
+        text="Analyze Live Feed",
+        command=camera_callbacks['analyze_live']
+    )
+    analyze_live_btn.pack(side=tk.LEFT, padx=2, pady=2)
+    
+    stop_camera_btn = ttk.Button(
+        button_frame,
+        text="Stop Camera",
+        command=camera_callbacks['stop']
+    )
+    stop_camera_btn.pack(side=tk.LEFT, padx=2, pady=2)
+    
+    # Function to handle camera type changes
+    def on_camera_change(*args):
+        camera_type = camera_var.get()
+        if camera_type == "ESP32 Camera":
+            ip_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
+            # Reset connect button when switching to ESP32
+            connect_var.set("Connect")
+        else:
+            ip_frame.pack_forget()
+            # Automatically connect to webcam
+            camera_id = camera_type.split("(")[1].split(")")[0]
+            camera_callbacks['connect_webcam'](camera_type, camera_id)
+    
+    # Bind dropdown change event
+    camera_var.trace_add("write", on_camera_change)
+    
+    return {
+        'frame': camera_frame,
+        'camera_var': camera_var,
+        'ip_entry': ip_entry,
+        'capture_btn': capture_btn,
+        'analyze_live_btn': analyze_live_btn, 
+        'stop_btn': stop_camera_btn,
+        'connect_btn': connect_btn,
+        'connect_var': connect_var
+    }
 
 def create_config_section(parent, providers, models, analyze_callback):
     """Create the configuration section"""

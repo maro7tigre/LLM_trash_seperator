@@ -14,10 +14,13 @@ from tkinter import ttk
 import numpy as np
 from PIL import ImageTk
 import threading
+import urllib.request
 
 # Global camera object that persists throughout the application
 _camera = None
 _camera_lock = threading.Lock()
+_camera_type = "webcam"  # Default camera type
+_camera_ip = ""  # For ESP32 camera
 
 # MARK: - Image Loading Functions
 def load_image_from_path(path):
@@ -73,14 +76,119 @@ def init_camera():
                 print(f"Error initializing camera: {e}")
                 _camera = None
 
+def set_camera_source(camera_type, camera_id=0, ip_address=""):
+    """
+    Set the camera source
+    
+    Args:
+        camera_type: Type of camera ("webcam" or "esp32")
+        camera_id: Camera ID for webcam (default: 0)
+        ip_address: IP address for ESP32 camera
+        
+    Returns:
+        Boolean indicating success
+    """
+    global _camera, _camera_type, _camera_ip
+    
+    with _camera_lock:
+        # Release existing camera if webcam type
+        if _camera is not None and _camera_type == "webcam":
+            _camera.release()
+            _camera = None
+        
+        # Store camera settings
+        _camera_type = camera_type
+        
+        if camera_type == "webcam":
+            try:
+                _camera = cv2.VideoCapture(int(camera_id))
+                
+                if _camera is not None and _camera.isOpened():
+                    # Set to a reasonable default resolution
+                    _camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    
+                    # Read a few frames to stabilize the camera
+                    for _ in range(5):
+                        _camera.read()
+                    
+                    print(f"Webcam {camera_id} initialized successfully")
+                    return True
+                else:
+                    print(f"Failed to initialize webcam {camera_id}")
+                    return False
+            except Exception as e:
+                print(f"Error initializing webcam: {e}")
+                return False
+        
+        elif camera_type == "esp32":
+            # For ESP32, we store the IP address but don't create a VideoCapture object
+            if not ip_address:
+                print("IP address is required for ESP32 camera")
+                return False
+            
+            # Validate the IP address format (basic check)
+            if not ip_address.startswith("http"):
+                # Add http:// prefix if missing
+                ip_address = f"http://{ip_address}"
+            
+            # Store the IP address for later use
+            _camera_ip = ip_address
+            return True
+        
+        else:
+            print(f"Unknown camera type: {camera_type}")
+            return False
+            
+def test_esp32_connection(ip_address):
+    """
+    Test connection to an ESP32 camera
+    
+    Args:
+        ip_address: IP address of the ESP32 camera
+        
+    Returns:
+        Boolean indicating success
+    """
+    try:
+        # Validate the IP address format (basic check)
+        if not ip_address.startswith("http"):
+            # Add http:// prefix if missing
+            ip_address = f"http://{ip_address}"
+            
+        # If URL ends with slash, append the image path
+        if ip_address.endswith("/"):
+            test_url = f"{ip_address}cam-lo.jpg"
+        else:
+            test_url = f"{ip_address}/cam-lo.jpg"
+        
+        # Try to open the URL
+        img_resp = urllib.request.urlopen(test_url)
+        imgnp = np.array(bytearray(img_resp.read()), dtype=np.uint8)
+        im = cv2.imdecode(imgnp, -1)
+        
+        if im is not None:
+            print(f"ESP32 camera at {ip_address} connected successfully")
+            return True
+        else:
+            print(f"Connected to {ip_address} but couldn't decode image")
+            return False
+    except Exception as e:
+        print(f"Error connecting to ESP32 camera at {ip_address}: {e}")
+        return False
+
 def get_camera():
     """Get the global camera object, initializing it if necessary"""
     global _camera
     
     with _camera_lock:
-        if _camera is None or not _camera.isOpened():
-            init_camera()
-        return _camera
+        if _camera_type == "webcam":
+            if _camera is None or not _camera.isOpened():
+                init_camera()
+            return _camera
+        else:
+            # For ESP32, we don't return a camera object
+            return None
 
 def release_camera():
     """Release the camera resources"""
@@ -104,30 +212,50 @@ def start_camera_preview(image_label, status_var, preview_active):
     Returns:
         Boolean indicating success
     """
-    # Get camera (initializes if needed)
-    camera = get_camera()
-    
-    if camera is None or not camera.isOpened():
-        status_var.set("Error: Could not open camera.")
-        return False
+    global _camera_type, _camera_ip
     
     # Set preview active flag
     preview_active[0] = True
     
-    # Start preview thread
-    preview_thread = threading.Thread(
-        target=update_camera_preview,
-        args=(image_label, camera, preview_active, status_var),
-        daemon=True
-    )
-    preview_thread.start()
+    if _camera_type == "webcam":
+        # Get camera (initializes if needed)
+        camera = get_camera()
+        
+        if camera is None or not camera.isOpened():
+            status_var.set("Error: Could not open webcam.")
+            return False
+        
+        # Start preview thread for webcam
+        preview_thread = threading.Thread(
+            target=update_camera_preview,
+            args=(image_label, camera, preview_active, status_var),
+            daemon=True
+        )
+        preview_thread.start()
     
-    status_var.set("Camera active. Click 'Capture' to take a photo.")
+    elif _camera_type == "esp32":
+        if not _camera_ip:
+            status_var.set("Error: ESP32 camera IP not set.")
+            return False
+        
+        # Start preview thread for ESP32 camera
+        preview_thread = threading.Thread(
+            target=update_esp32_preview,
+            args=(image_label, _camera_ip, preview_active, status_var),
+            daemon=True
+        )
+        preview_thread.start()
+    
+    else:
+        status_var.set(f"Error: Unknown camera type '{_camera_type}'.")
+        return False
+    
+    status_var.set(f"Camera active ({_camera_type}). Click 'Capture' to take a photo.")
     return True
 
 def update_camera_preview(image_label, camera, preview_active, status_var):
     """
-    Camera preview thread function - runs in a separate thread
+    Camera preview thread function for webcam - runs in a separate thread
     
     Args:
         image_label: Tkinter label widget
@@ -180,6 +308,75 @@ def update_camera_preview(image_label, camera, preview_active, status_var):
             image_label.after(0, lambda: status_var.set(f"Camera error: {str(e)}"))
             break
 
+def update_esp32_preview(image_label, ip_address, preview_active, status_var):
+    """
+    Camera preview thread function for ESP32 camera - runs in a separate thread
+    
+    Args:
+        image_label: Tkinter label widget
+        ip_address: ESP32 camera IP address
+        preview_active: List with boolean flag to control preview loop
+        status_var: Tkinter StringVar for status updates
+    """
+    last_update = time.time()
+    frame_delay = 1.0 / 10  # Target 10 FPS (ESP32 cameras are usually slower)
+    
+    # Format the URL correctly
+    if ip_address.endswith("/"):
+        url = f"{ip_address}cam-lo.jpg"
+    else:
+        url = f"{ip_address}/cam-lo.jpg"
+        
+    while preview_active[0]:
+        try:
+            # Throttle updates to target frame rate
+            current_time = time.time()
+            if current_time - last_update < frame_delay:
+                time.sleep(0.01)  # Short sleep to reduce CPU usage
+                continue
+                
+            last_update = current_time
+            
+            # Read frame from ESP32 camera
+            img_resp = urllib.request.urlopen(url)
+            imgnp = np.array(bytearray(img_resp.read()), dtype=np.uint8)
+            frame = cv2.imdecode(imgnp, -1)
+            
+            if frame is None:
+                # Camera disconnected or error
+                image_label.after(0, lambda: status_var.set("ESP32 camera error: Failed to decode frame"))
+                time.sleep(1)  # Wait longer on error
+                continue
+            
+            # Convert to RGB for tkinter if needed
+            if len(frame.shape) == 3 and frame.shape[2] == 3:
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            else:
+                # Already RGB or grayscale
+                frame_rgb = frame
+            
+            # Resize frame for display (keeping aspect ratio)
+            height, width = frame_rgb.shape[:2]
+            max_height = 400
+            max_width = 500
+            
+            if height > max_height or width > max_width:
+                scale = min(max_height / height, max_width / width)
+                new_height, new_width = int(height * scale), int(width * scale)
+                frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
+            
+            # Convert to PhotoImage and update label in main thread
+            img_pil = Image.fromarray(frame_rgb)
+            img_tk = ImageTk.PhotoImage(image=img_pil)
+            
+            # Update UI in the main thread
+            image_label.after(0, lambda img=img_tk: update_label(image_label, img))
+        
+        except Exception as e:
+            # Handle errors gracefully
+            image_label.after(0, lambda: status_var.set(f"ESP32 camera error: {str(e)}"))
+            time.sleep(1)  # Wait longer on error
+
 def update_label(label, image):
     """Update label with new image (called in main thread)"""
     label.config(image=image)
@@ -195,27 +392,55 @@ def capture_image_embedded(save_dir="."):
     Returns:
         Image info dictionary or None if failed
     """
+    global _camera_type, _camera_ip
+    
     try:
-        camera = get_camera()
-        if camera is None or not camera.isOpened():
-            return None
-        
         # Create save directory if it doesn't exist
         os.makedirs(save_dir, exist_ok=True)
-        
-        # Read a few frames to make sure we get a recent image
-        for _ in range(3):
-            ret, frame = camera.read()
-            if not ret:
-                return None
         
         # Generate a filename with timestamp
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         filename = f"camera_{timestamp}.jpg"
         filepath = os.path.join(save_dir, filename)
         
-        # Save the image
-        cv2.imwrite(filepath, frame)
+        # Capture based on camera type
+        if _camera_type == "webcam":
+            camera = get_camera()
+            if camera is None or not camera.isOpened():
+                return None
+            
+            # Read a few frames to make sure we get a recent image
+            for _ in range(3):
+                ret, frame = camera.read()
+                if not ret:
+                    return None
+            
+            # Save the image
+            cv2.imwrite(filepath, frame)
+            
+        elif _camera_type == "esp32":
+            if not _camera_ip:
+                return None
+                
+            # Format the URL
+            if _camera_ip.endswith("/"):
+                url = f"{_camera_ip}cam-lo.jpg"
+            else:
+                url = f"{_camera_ip}/cam-lo.jpg"
+            
+            # Capture from ESP32
+            img_resp = urllib.request.urlopen(url)
+            imgnp = np.array(bytearray(img_resp.read()), dtype=np.uint8)
+            frame = cv2.imdecode(imgnp, -1)
+            
+            if frame is None:
+                return None
+                
+            # Save the image
+            cv2.imwrite(filepath, frame)
+        
+        else:
+            return None
         
         # Create image info dictionary
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -238,14 +463,38 @@ def get_current_frame():
     Returns:
         Tuple of (BGR image, RGB image) or (None, None) if failed
     """
+    global _camera_type, _camera_ip
+    
     try:
-        camera = get_camera()
-        if camera is None or not camera.isOpened():
-            return None, None
+        if _camera_type == "webcam":
+            camera = get_camera()
+            if camera is None or not camera.isOpened():
+                return None, None
+            
+            # Read the current frame
+            ret, frame = camera.read()
+            if not ret:
+                return None, None
+                
+        elif _camera_type == "esp32":
+            if not _camera_ip:
+                return None, None
+                
+            # Format the URL
+            if _camera_ip.endswith("/"):
+                url = f"{_camera_ip}cam-lo.jpg"
+            else:
+                url = f"{_camera_ip}/cam-lo.jpg"
+            
+            # Capture from ESP32
+            img_resp = urllib.request.urlopen(url)
+            imgnp = np.array(bytearray(img_resp.read()), dtype=np.uint8)
+            frame = cv2.imdecode(imgnp, -1)
+            
+            if frame is None:
+                return None, None
         
-        # Read the current frame
-        ret, frame = camera.read()
-        if not ret:
+        else:
             return None, None
         
         # Convert to RGB for display
