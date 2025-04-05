@@ -13,6 +13,11 @@ import tkinter as tk
 from tkinter import ttk
 import numpy as np
 from PIL import ImageTk
+import threading
+
+# Global camera object that persists throughout the application
+_camera = None
+_camera_lock = threading.Lock()
 
 # MARK: - Image Loading Functions
 def load_image_from_path(path):
@@ -41,106 +46,168 @@ def load_image_from_path(path):
         return None
 
 # MARK: - Camera Functions
-def start_camera_preview(image_label, status_var, root):
+def init_camera():
+    """Initialize the camera once at application startup"""
+    global _camera
+    
+    with _camera_lock:
+        if _camera is None:
+            try:
+                # Try to initialize the camera with lower resolution first for faster startup
+                _camera = cv2.VideoCapture(0)
+                
+                if _camera is not None and _camera.isOpened():
+                    # Set to a reasonable default resolution - can be changed later if needed
+                    _camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                    _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    
+                    # Read a few frames to stabilize the camera
+                    for _ in range(5):
+                        _camera.read()
+                    
+                    print("Camera initialized successfully")
+                else:
+                    print("Failed to initialize camera")
+                    _camera = None
+            except Exception as e:
+                print(f"Error initializing camera: {e}")
+                _camera = None
+
+def get_camera():
+    """Get the global camera object, initializing it if necessary"""
+    global _camera
+    
+    with _camera_lock:
+        if _camera is None or not _camera.isOpened():
+            init_camera()
+        return _camera
+
+def release_camera():
+    """Release the camera resources"""
+    global _camera
+    
+    with _camera_lock:
+        if _camera is not None:
+            _camera.release()
+            _camera = None
+            print("Camera released")
+
+def start_camera_preview(image_label, status_var, preview_active):
     """
-    Start camera preview in the given image label
+    Start camera preview thread
     
     Args:
         image_label: Tkinter label widget to display camera preview
         status_var: Tkinter StringVar for status updates
-        root: Tkinter root window
+        preview_active: List with boolean flag to control preview loop
         
     Returns:
-        VideoCapture object or None if failed
+        Boolean indicating success
     """
-    try:
-        # Initialize camera (0 is usually the default camera)
-        cap = cv2.VideoCapture(0)
-        
-        if not cap.isOpened():
-            status_var.set("Error: Could not open camera.")
-            return None
-        
-        # Set camera properties (optional)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        
-        status_var.set("Camera active. Click 'Capture' to take a photo.")
-        
-        return cap
+    # Get camera (initializes if needed)
+    camera = get_camera()
     
-    except Exception as e:
-        status_var.set(f"Error accessing camera: {e}")
-        return None
+    if camera is None or not camera.isOpened():
+        status_var.set("Error: Could not open camera.")
+        return False
+    
+    # Set preview active flag
+    preview_active[0] = True
+    
+    # Start preview thread
+    preview_thread = threading.Thread(
+        target=update_camera_preview,
+        args=(image_label, camera, preview_active, status_var),
+        daemon=True
+    )
+    preview_thread.start()
+    
+    status_var.set("Camera active. Click 'Capture' to take a photo.")
+    return True
 
-def update_camera_preview(image_label, cap, preview_active):
+def update_camera_preview(image_label, camera, preview_active, status_var):
     """
-    Update camera preview frame in the image label
+    Camera preview thread function - runs in a separate thread
     
     Args:
         image_label: Tkinter label widget
-        cap: OpenCV VideoCapture object
-        preview_active: Boolean reference to check if preview should continue
+        camera: OpenCV VideoCapture object
+        preview_active: List with boolean flag to control preview loop
+        status_var: Tkinter StringVar for status updates
+    """
+    last_update = time.time()
+    frame_delay = 1.0 / 30  # Target 30 FPS
+    
+    while preview_active[0]:
+        try:
+            # Throttle updates to target frame rate
+            current_time = time.time()
+            if current_time - last_update < frame_delay:
+                time.sleep(0.001)  # Short sleep to reduce CPU usage
+                continue
+                
+            last_update = current_time
+            
+            # Read frame from camera
+            ret, frame = camera.read()
+            if not ret:
+                # Camera disconnected or error
+                image_label.after(0, lambda: status_var.set("Camera error: Failed to read frame"))
+                break
+            
+            # Convert to RGB for tkinter
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Resize frame for display (keeping aspect ratio)
+            height, width = frame_rgb.shape[:2]
+            max_height = 400
+            max_width = 500
+            
+            if height > max_height or width > max_width:
+                scale = min(max_height / height, max_width / width)
+                new_height, new_width = int(height * scale), int(width * scale)
+                frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
+            
+            # Convert to PhotoImage and update label in main thread
+            img_pil = Image.fromarray(frame_rgb)
+            img_tk = ImageTk.PhotoImage(image=img_pil)
+            
+            # Update UI in the main thread
+            image_label.after(0, lambda img=img_tk: update_label(image_label, img))
         
-    Returns:
-        None
-    """
-    if not cap or not cap.isOpened() or not preview_active[0]:
-        return
-    
-    # Read frame from camera
-    ret, frame = cap.read()
-    if not ret:
-        return
-    
-    # Convert to RGB for tkinter
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    # Resize frame for display while maintaining aspect ratio
-    height, width = frame_rgb.shape[:2]
-    max_height = 400
-    max_width = 500
-    
-    # Calculate new dimensions
-    if height > max_height or width > max_width:
-        scale = min(max_height / height, max_width / width)
-        new_height, new_width = int(height * scale), int(width * scale)
-        frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
-    
-    # Convert to PhotoImage
-    img_pil = Image.fromarray(frame_rgb)
-    img_tk = ImageTk.PhotoImage(image=img_pil)
-    
-    # Update label
-    image_label.config(image=img_tk)
-    image_label.image = img_tk  # Keep a reference to prevent garbage collection
-    
-    # Schedule next update (approximately 30 FPS)
-    if preview_active[0]:
-        image_label.after(33, lambda: update_camera_preview(image_label, cap, preview_active))
+        except Exception as e:
+            # Handle errors gracefully
+            image_label.after(0, lambda: status_var.set(f"Camera error: {str(e)}"))
+            break
 
-def capture_image_embedded(cap, save_dir="."):
+def update_label(label, image):
+    """Update label with new image (called in main thread)"""
+    label.config(image=image)
+    label.image = image  # Keep a reference to prevent garbage collection
+
+def capture_image_embedded(save_dir="."):
     """
-    Capture an image from the active camera preview
+    Capture an image from the active camera
     
     Args:
-        cap: OpenCV VideoCapture object
         save_dir: Directory to save the captured image
         
     Returns:
         Image info dictionary or None if failed
     """
     try:
-        if not cap or not cap.isOpened():
+        camera = get_camera()
+        if camera is None or not camera.isOpened():
             return None
         
         # Create save directory if it doesn't exist
         os.makedirs(save_dir, exist_ok=True)
         
-        # Capture the image
-        ret, frame = cap.read()
-        if not ret:
-            return None
+        # Read a few frames to make sure we get a recent image
+        for _ in range(3):
+            ret, frame = camera.read()
+            if not ret:
+                return None
         
         # Generate a filename with timestamp
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -164,18 +231,31 @@ def capture_image_embedded(cap, save_dir="."):
         print(f"Error capturing image: {e}")
         return None
 
-def stop_camera_preview(cap):
+def get_current_frame():
     """
-    Stop camera preview and release resources
+    Get the current frame from the camera without saving
     
-    Args:
-        cap: OpenCV VideoCapture object
-        
     Returns:
-        None
+        Tuple of (BGR image, RGB image) or (None, None) if failed
     """
-    if cap and cap.isOpened():
-        cap.release()
+    try:
+        camera = get_camera()
+        if camera is None or not camera.isOpened():
+            return None, None
+        
+        # Read the current frame
+        ret, frame = camera.read()
+        if not ret:
+            return None, None
+        
+        # Convert to RGB for display
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        return frame, img_rgb
+        
+    except Exception as e:
+        print(f"Error getting frame: {e}")
+        return None, None
 
 # MARK: - Random Image Functions
 def get_random_images(max_count=20):

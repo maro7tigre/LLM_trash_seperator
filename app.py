@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 import threading
 import cv2
+
 # Import helpers
 import ui_helper
 import model_helper
@@ -26,8 +27,10 @@ class TrashAnalyzerApp:
         
         # Camera variables
         self.camera_active = False
-        self.camera_cap = None
         self.preview_active = [False]  # Using a list to make it mutable for reference
+        
+        # Initialize camera at startup
+        image_utils.init_camera()
         
         # Get available providers and models
         self.providers = model_helper.get_available_providers()
@@ -93,6 +96,14 @@ class TrashAnalyzerApp:
             command=self.capture_from_camera
         )
         self.capture_btn.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Analyze live button
+        self.analyze_live_btn = ttk.Button(
+            self.camera_controls,
+            text="Analyze Live Feed",
+            command=self.analyze_live_camera
+        )
+        self.analyze_live_btn.pack(side=tk.LEFT, padx=5, pady=5)
         
         # Stop camera button
         self.stop_camera_btn = ttk.Button(
@@ -172,6 +183,9 @@ class TrashAnalyzerApp:
         if self.camera_active:
             self.stop_camera()
         
+        # Release camera resources
+        image_utils.release_camera()
+        
         # Close the window
         self.root.destroy()
     
@@ -192,14 +206,18 @@ class TrashAnalyzerApp:
         # Clear the current image display
         self.image_label.config(image='')
         
-        # Start camera
-        self.camera_cap = image_utils.start_camera_preview(
+        # Update status
+        self.config_widgets['status_var'].set("Starting camera...")
+        self.root.update()
+        
+        # Start camera preview
+        success = image_utils.start_camera_preview(
             self.image_label,
             self.config_widgets['status_var'],
-            self.root
+            self.preview_active
         )
         
-        if self.camera_cap is None:
+        if not success:
             self.config_widgets['status_var'].set("Failed to start camera")
             return
         
@@ -208,10 +226,6 @@ class TrashAnalyzerApp:
         
         # Update state
         self.camera_active = True
-        self.preview_active[0] = True
-        
-        # Start preview loop
-        image_utils.update_camera_preview(self.image_label, self.camera_cap, self.preview_active)
     
     def stop_camera(self):
         """Stop camera preview"""
@@ -221,10 +235,6 @@ class TrashAnalyzerApp:
         
         # Stop preview loop
         self.preview_active[0] = False
-        
-        # Release camera
-        image_utils.stop_camera_preview(self.camera_cap)
-        self.camera_cap = None
         
         # Hide camera controls
         self.camera_controls.pack_forget()
@@ -244,14 +254,14 @@ class TrashAnalyzerApp:
     
     def capture_from_camera(self):
         """Capture image from camera preview"""
-        if not self.camera_active or self.camera_cap is None:
+        if not self.camera_active:
             return
         
         # Create captured_images folder if it doesn't exist
         captures_dir = os.path.join(".", "captured_images")
         
         # Capture the image
-        image_info = image_utils.capture_image_embedded(self.camera_cap, captures_dir)
+        image_info = image_utils.capture_image_embedded(captures_dir)
         
         if not image_info:
             self.config_widgets['status_var'].set("Failed to capture image")
@@ -278,6 +288,29 @@ class TrashAnalyzerApp:
         
         # Update status
         self.config_widgets['status_var'].set("Image captured from camera")
+    
+    def analyze_live_camera(self):
+        """Analyze the current live camera feed"""
+        if not self.camera_active:
+            return
+        
+        # Get the current frame from the camera
+        frame, frame_rgb = image_utils.get_current_frame()
+        
+        if frame is None:
+            self.config_widgets['status_var'].set("Failed to get frame from camera")
+            return
+            
+        # Create a temporary image info
+        temp_image = {
+            'path': None,
+            'name': 'live_camera',
+            'data': frame,
+            'display': frame_rgb
+        }
+        
+        # Run analysis on this frame
+        self._run_analysis_on_image(temp_image)
     
     # MARK: - Image Management
     def open_images(self):
@@ -391,32 +424,25 @@ class TrashAnalyzerApp:
     
     # MARK: - Image Analysis
     def analyze_image(self):
-        """Analyze the current image using selected model"""
-        # If camera is active, use the current camera frame
-        if self.camera_active and self.camera_cap is not None:
-            # Capture the current frame
-            ret, frame = self.camera_cap.read()
-            if not ret:
-                messagebox.showwarning("Camera Error", "Failed to capture frame from camera.")
+        """Analyze the currently selected image"""
+        if self.current_image_index < 0:
+            # No image selected
+            if self.camera_active:
+                # If camera is active, analyze the live feed
+                self.analyze_live_camera()
                 return
-            
-            # Convert BGR to RGB for display
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Create a temporary image info
-            current_image = {
-                'path': None,
-                'name': 'camera_preview',
-                'data': frame,
-                'display': frame_rgb
-            }
-        elif self.current_image_index < 0:
-            messagebox.showwarning("No Image", "Please select an image first.")
-            return
-        else:
-            # Get current image from list
-            current_image = self.images[self.current_image_index]
+            else:
+                messagebox.showwarning("No Image", "Please select an image first.")
+                return
         
+        # Get current image from list
+        current_image = self.images[self.current_image_index]
+        
+        # Run analysis
+        self._run_analysis_on_image(current_image)
+    
+    def _run_analysis_on_image(self, image_info):
+        """Run analysis on the specified image"""
         # Get prompt
         prompt = self.prompt_text.get("1.0", tk.END).strip()
         if not prompt:
@@ -428,64 +454,16 @@ class TrashAnalyzerApp:
         max_tokens = self.config_widgets['max_length'].get()
         provider = self.config_widgets['provider_var'].get()
         model_name = self.config_widgets['model_var'].get()
+        
         if not provider or not model_name:
             messagebox.showwarning("No Model", "Please select a provider and model.")
             return
-            
-        # For backward compatibility, if Gemini is selected, use the direct approach from the original code
-        if provider == 'Gemini':
-            self._analyze_with_gemini(
-                prompt, 
-                current_image, 
-                model_name, 
-                temperature, 
-                max_tokens
-            )
-        else:
-            # Use the generic approach for other providers
-            # Disable analyze button during processing
-            self.config_widgets['analyze_button'].config(state=tk.DISABLED)
-            self.config_widgets['status_var'].set("Analyzing image...")
-            
-            # Clear results
-            ui_helper.update_results(self.results_text, "")
-            
-            # Run analysis in background thread
-            def analysis_thread():
-                try:
-                    # Call model helper to analyze image
-                    result = model_helper.analyze_image(
-                        provider, 
-                        model_name, 
-                        prompt, 
-                        current_image['data'],
-                        temperature,
-                        max_tokens
-                    )
-                    
-                    # Update UI with results
-                    self.root.after(0, lambda: ui_helper.update_results(self.results_text, result))
-                    self.root.after(0, lambda: self.config_widgets['status_var'].set("Analysis complete"))
-                
-                except Exception as e:
-                    error_msg = str(e)
-                    self.root.after(0, lambda: ui_helper.update_results(self.results_text, f"ERROR: {error_msg}"))
-                    self.root.after(0, lambda: self.config_widgets['status_var'].set("Error during analysis"))
-                
-                finally:
-                    # Enable button again
-                    self.root.after(0, lambda: self.config_widgets['analyze_button'].config(state=tk.NORMAL))
-            
-            # Start thread
-            threading.Thread(target=analysis_thread, daemon=True).start()
-    
-    def _analyze_with_gemini(self, prompt, current_image, model_name, temperature, max_tokens):
-        """
-        Analyze image using Gemini API directly - uses the same approach as the original code
-        This ensures compatibility with the original implementation
-        """
+        
         # Disable analyze button during processing
         self.config_widgets['analyze_button'].config(state=tk.DISABLED)
+        if self.camera_active:
+            self.analyze_live_btn.config(state=tk.DISABLED)
+        
         self.config_widgets['status_var'].set("Analyzing image...")
         
         # Clear results
@@ -494,39 +472,18 @@ class TrashAnalyzerApp:
         # Run analysis in background thread
         def analysis_thread():
             try:
-                # Import required libraries
-                import google.generativeai as genai
-                from PIL import Image
-                import cv2
-                from credentials import get_api_key
-                
-                # Get API key - using original approach
-                api_key = get_api_key()
-                
-                # Configure the API
-                genai.configure(api_key=api_key)
-                
-                # Prepare image for API - exactly as in original code
-                img_rgb = cv2.cvtColor(current_image['data'], cv2.COLOR_BGR2RGB)
-                pil_image = Image.fromarray(img_rgb)
-                
-                # Create the model with generation config - exactly as in original code
-                model = genai.GenerativeModel(
-                    model_name=model_name,
-                    generation_config={
-                        "temperature": temperature,
-                        "max_output_tokens": max_tokens,
-                        "top_p": 0.95,
-                        "top_k": 64
-                    }
+                # Call model helper to analyze image
+                result = model_helper.analyze_image(
+                    provider, 
+                    model_name, 
+                    prompt, 
+                    image_info['data'],
+                    temperature,
+                    max_tokens
                 )
                 
-                # Generate content using the model with PIL image directly - exactly as in original code
-                response = model.generate_content([prompt, pil_image])
-                
-                # Process response - exactly as in original code
-                result_text = response.text if hasattr(response, 'text') else str(response)
-                self.root.after(0, lambda: ui_helper.update_results(self.results_text, result_text))
+                # Update UI with results
+                self.root.after(0, lambda: ui_helper.update_results(self.results_text, result))
                 self.root.after(0, lambda: self.config_widgets['status_var'].set("Analysis complete"))
             
             except Exception as e:
@@ -535,8 +492,10 @@ class TrashAnalyzerApp:
                 self.root.after(0, lambda: self.config_widgets['status_var'].set("Error during analysis"))
             
             finally:
-                # Enable button again
+                # Enable buttons again
                 self.root.after(0, lambda: self.config_widgets['analyze_button'].config(state=tk.NORMAL))
+                if self.camera_active:
+                    self.root.after(0, lambda: self.analyze_live_btn.config(state=tk.NORMAL))
         
         # Start thread
         threading.Thread(target=analysis_thread, daemon=True).start()
