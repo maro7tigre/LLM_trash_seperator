@@ -1,28 +1,35 @@
 """
 LLM model helper functions for Trash Analyzer
-Contains functions for Gemini and OpenAI multimodal models
+Contains functions for Gemini, OpenAI multimodal models, and local LM Studio models
 """
 
 import os
+import requests
 from image_utils import prepare_image_for_api
 from credentials import get_api_key
 
 # MARK: - Available Models by Provider
 AVAILABLE_MODELS = {
     'Gemini': [
-        "gemini-2.0-flash",         # Multimodal: text, image, audio, video
-        "gemini-2.0-flash-lite",    # Lightweight multimodal
-        "gemini-1.5-flash",         # Multimodal support
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
     ],
     'OpenAI': [
         "gpt-4o",
         "gpt-4o-mini",
+    ],
+    'Local': [
+        "gemma-3-4b-it",
+        # Uncomment the following if you later run additional local models:
+        # "gemma-3-12b",
+        # "gemma-3-27b"
     ]
 }
 
 # MARK: - Provider Availability
 def get_available_providers():
-    """Check which providers have API keys configured"""
+    """Check which providers have API keys configured or are available locally"""
     available = []
     
     # Check Gemini
@@ -32,6 +39,9 @@ def get_available_providers():
     # Check OpenAI
     if get_api_key('openai'):
         available.append('OpenAI')
+    
+    # Local provider is assumed to be available if LM Studio local server is running
+    available.append('Local')
     
     return available
 
@@ -45,7 +55,6 @@ def get_models_for_provider(provider):
 def analyze_with_gemini(prompt, image_data, model_name, temperature=0.7, max_tokens=100):
     """Analyze an image using Google's Gemini API"""
     try:
-        # Import the Google Generative AI library
         import google.generativeai as genai
         
         # Get API key - use the default method if no specific provider is given
@@ -62,7 +71,7 @@ def analyze_with_gemini(prompt, image_data, model_name, temperature=0.7, max_tok
         img_rgb = cv2.cvtColor(image_data, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(img_rgb)
         
-        # Create the model with generation config - using the same parameters as original code
+        # Create the model with generation config
         model = genai.GenerativeModel(
             model_name=model_name,
             generation_config={
@@ -73,10 +82,10 @@ def analyze_with_gemini(prompt, image_data, model_name, temperature=0.7, max_tok
             }
         )
         
-        # Generate content - passing both prompt and image directly as in original code
+        # Generate content - passing both prompt and image
         response = model.generate_content([prompt, pil_image])
         
-        # Return result - using the same text extraction method as original code
+        # Return result
         return response.text if hasattr(response, 'text') else str(response)
     
     except ImportError:
@@ -87,7 +96,6 @@ def analyze_with_gemini(prompt, image_data, model_name, temperature=0.7, max_tok
 def analyze_with_openai(prompt, image_data, model_name, temperature=0.7, max_tokens=100):
     """Analyze an image using OpenAI's API"""
     try:
-        # Import OpenAI client - using current official SDK approach
         from openai import OpenAI
         
         # Get API key
@@ -101,7 +109,51 @@ def analyze_with_openai(prompt, image_data, model_name, temperature=0.7, max_tok
         # Prepare image (base64)
         base64_image = prepare_image_for_api(image_data, 'openai')
         
-        # Create message with image - using Vision API format
+        # Create message with image in Vision API format
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}
+                    }
+                ]
+            }
+        ]
+        
+        # Generate content using chat completions API
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+        
+        # Return result
+        if response.choices and len(response.choices) > 0:
+            return response.choices[0].message.content
+        return "No response received from OpenAI"
+    
+    except ImportError:
+        return "ERROR: OpenAI library not installed. Install with: pip install openai"
+    except Exception as e:
+        return f"ERROR: OpenAI API error: {str(e)}"
+
+def analyze_with_local(prompt, image_data, model_name, temperature=0.7, max_tokens=100):
+    """Analyze an image using OpenAI's API"""
+    try:
+        from openai import OpenAI
+        
+        
+        # Create client (current SDK pattern)
+        client = OpenAI(base_url="http://127.0.0.1:1234/v1", api_key="lm-studio")
+        
+        # Prepare image (base64)
+        base64_image = prepare_image_for_api(image_data, 'openai')
+        
+        # Create message with image in Vision API format
         messages = [
             {
                 "role": "user",
@@ -139,7 +191,7 @@ def analyze_image(provider, model_name, prompt, image_data, temperature=0.7, max
     Analyze image using the appropriate provider
     
     Args:
-        provider: Provider name ('Gemini', 'OpenAI')
+        provider: Provider name ('Gemini', 'OpenAI', 'Local')
         model_name: Name of the model
         prompt: Text prompt for analysis
         image_data: Image data in OpenCV format (BGR)
@@ -149,10 +201,11 @@ def analyze_image(provider, model_name, prompt, image_data, temperature=0.7, max
     Returns:
         Analysis result as text
     """
-    # Route to the appropriate provider
     if provider == 'Gemini':
         return analyze_with_gemini(prompt, image_data, model_name, temperature, max_tokens)
     elif provider == 'OpenAI':
         return analyze_with_openai(prompt, image_data, model_name, temperature, max_tokens)
+    elif provider == 'Local':
+        return analyze_with_local(prompt, image_data, model_name, temperature, max_tokens)
     else:
         return f"ERROR: Unknown provider: {provider}"

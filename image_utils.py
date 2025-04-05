@@ -66,13 +66,16 @@ def get_random_images(max_count=20):
 
 
 # MARK: - Image Preparation for APIs
-def prepare_image_for_api(img_data, provider):
+def prepare_image_for_api(img_data, provider, max_size=None):
     """
-    Prepare image for different API providers
+    Prepare image for different API providers with optional resizing
     
     Args:
         img_data: Image data in CV2 format (BGR)
         provider: Provider name ('gemini', 'openai')
+        max_size: Maximum dimension (width or height) in pixels. If provided,
+                  image will be resized to fit within this limit while
+                  maintaining aspect ratio.
         
     Returns:
         Processed image in the format required by the provider
@@ -84,6 +87,26 @@ def prepare_image_for_api(img_data, provider):
     # Convert to PIL image
     from PIL import Image
     pil_image = Image.fromarray(img_rgb)
+    
+    # Resize image if max_size is provided
+    if max_size is not None and isinstance(max_size, int) and max_size > 0:
+        # Get current dimensions
+        width, height = pil_image.size
+        
+        # Check if resizing is needed
+        if width > max_size or height > max_size:
+            # Determine which dimension is larger
+            if width >= height:
+                # Width is larger or equal, scale based on width
+                new_width = max_size
+                new_height = int(height * (max_size / width))
+            else:
+                # Height is larger, scale based on height
+                new_height = max_size
+                new_width = int(width * (max_size / height))
+            
+            # Resize the image
+            pil_image = pil_image.resize((new_width, new_height), Image.LANCZOS)
     
     # Format by provider
     provider = provider.lower()
