@@ -9,6 +9,10 @@ import random
 import shutil
 from PIL import Image
 import time
+import tkinter as tk
+from tkinter import ttk
+import numpy as np
+from PIL import ImageTk
 
 # MARK: - Image Loading Functions
 def load_image_from_path(path):
@@ -37,88 +41,106 @@ def load_image_from_path(path):
         return None
 
 # MARK: - Camera Functions
-def capture_image_from_camera(save_dir="."):
+def start_camera_preview(image_label, status_var, root):
     """
-    Capture an image using the camera
+    Start camera preview in the given image label
     
     Args:
-        save_dir: Directory to save the captured image
+        image_label: Tkinter label widget to display camera preview
+        status_var: Tkinter StringVar for status updates
+        root: Tkinter root window
         
     Returns:
-        Image info dictionary or None if failed
+        VideoCapture object or None if failed
     """
     try:
-        # Create save directory if it doesn't exist
-        os.makedirs(save_dir, exist_ok=True)
-        
         # Initialize camera (0 is usually the default camera)
         cap = cv2.VideoCapture(0)
         
         if not cap.isOpened():
-            print("Error: Could not open camera.")
+            status_var.set("Error: Could not open camera.")
             return None
         
         # Set camera properties (optional)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
-        # Countdown timer
-        countdown = 3
-        while countdown > 0:
-            ret, frame = cap.read()
-            if not ret:
-                print("Error: Failed to grab frame.")
-                cap.release()
-                return None
-            
-            # Display countdown
-            cv2.putText(
-                frame, 
-                f"Capturing in {countdown}...", 
-                (50, 70), 
-                cv2.FONT_HERSHEY_SIMPLEX, 
-                1, 
-                (0, 0, 255), 
-                2
-            )
-            
-            cv2.imshow("Camera Capture", frame)
-            
-            # Wait for 1 second
-            start_time = time.time()
-            while time.time() - start_time < 1:
-                if cv2.waitKey(1) & 0xFF == 27:  # ESC key to cancel
-                    cap.release()
-                    cv2.destroyAllWindows()
-                    return None
-            
-            countdown -= 1
+        status_var.set("Camera active. Click 'Capture' to take a photo.")
+        
+        return cap
+    
+    except Exception as e:
+        status_var.set(f"Error accessing camera: {e}")
+        return None
+
+def update_camera_preview(image_label, cap, preview_active):
+    """
+    Update camera preview frame in the image label
+    
+    Args:
+        image_label: Tkinter label widget
+        cap: OpenCV VideoCapture object
+        preview_active: Boolean reference to check if preview should continue
+        
+    Returns:
+        None
+    """
+    if not cap or not cap.isOpened() or not preview_active[0]:
+        return
+    
+    # Read frame from camera
+    ret, frame = cap.read()
+    if not ret:
+        return
+    
+    # Convert to RGB for tkinter
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    
+    # Resize frame for display while maintaining aspect ratio
+    height, width = frame_rgb.shape[:2]
+    max_height = 400
+    max_width = 500
+    
+    # Calculate new dimensions
+    if height > max_height or width > max_width:
+        scale = min(max_height / height, max_width / width)
+        new_height, new_width = int(height * scale), int(width * scale)
+        frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
+    
+    # Convert to PhotoImage
+    img_pil = Image.fromarray(frame_rgb)
+    img_tk = ImageTk.PhotoImage(image=img_pil)
+    
+    # Update label
+    image_label.config(image=img_tk)
+    image_label.image = img_tk  # Keep a reference to prevent garbage collection
+    
+    # Schedule next update (approximately 30 FPS)
+    if preview_active[0]:
+        image_label.after(33, lambda: update_camera_preview(image_label, cap, preview_active))
+
+def capture_image_embedded(cap, save_dir="."):
+    """
+    Capture an image from the active camera preview
+    
+    Args:
+        cap: OpenCV VideoCapture object
+        save_dir: Directory to save the captured image
+        
+    Returns:
+        Image info dictionary or None if failed
+    """
+    try:
+        if not cap or not cap.isOpened():
+            return None
+        
+        # Create save directory if it doesn't exist
+        os.makedirs(save_dir, exist_ok=True)
         
         # Capture the image
         ret, frame = cap.read()
         if not ret:
-            print("Error: Failed to grab frame.")
-            cap.release()
-            cv2.destroyAllWindows()
             return None
-        
-        # Display "CAPTURED" message
-        cv2.putText(
-            frame, 
-            "CAPTURED!", 
-            (50, 70), 
-            cv2.FONT_HERSHEY_SIMPLEX, 
-            1, 
-            (0, 255, 0), 
-            2
-        )
-        
-        cv2.imshow("Camera Capture", frame)
-        cv2.waitKey(1000)  # Display for 1 second
-        
-        # Release camera and close window
-        cap.release()
-        cv2.destroyAllWindows()
         
         # Generate a filename with timestamp
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -140,10 +162,20 @@ def capture_image_from_camera(save_dir="."):
         
     except Exception as e:
         print(f"Error capturing image: {e}")
-        if 'cap' in locals() and cap is not None:
-            cap.release()
-        cv2.destroyAllWindows()
         return None
+
+def stop_camera_preview(cap):
+    """
+    Stop camera preview and release resources
+    
+    Args:
+        cap: OpenCV VideoCapture object
+        
+    Returns:
+        None
+    """
+    if cap and cap.isOpened():
+        cap.release()
 
 # MARK: - Random Image Functions
 def get_random_images(max_count=20):

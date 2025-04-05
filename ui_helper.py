@@ -40,7 +40,7 @@ def create_image_list_panel(parent, callbacks):
     
     ttk.Button(
         buttons_frame, 
-        text="Camera", 
+        text="Toggle Camera", 
         command=callbacks['camera']
     ).pack(side=tk.LEFT, padx=2)
     

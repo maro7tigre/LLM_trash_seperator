@@ -4,9 +4,9 @@ Main Application Class for Trash Analyzer
 
 import os
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 import threading
-
+import cv2
 # Import helpers
 import ui_helper
 import model_helper
@@ -24,6 +24,11 @@ class TrashAnalyzerApp:
         self.images = []  # List of {path, name, data, display}
         self.current_image_index = -1
         
+        # Camera variables
+        self.camera_active = False
+        self.camera_cap = None
+        self.preview_active = [False]  # Using a list to make it mutable for reference
+        
         # Get available providers and models
         self.providers = model_helper.get_available_providers()
         if not self.providers:
@@ -38,6 +43,9 @@ class TrashAnalyzerApp:
         
         # Create UI layout
         self._create_ui()
+        
+        # Bind window close event
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         
     def _create_ui(self):
         """Create the UI layout"""
@@ -60,15 +68,39 @@ class TrashAnalyzerApp:
             middle_frame,
             {
                 'upload': self.open_images,
-                'camera': self.capture_from_camera,
+                'camera': self.toggle_camera,
                 'random': self.get_random_images,
                 'clear': self.clear_images,
                 'select': self.on_file_select
             }
         )
         
-        # Right panel - Image display
-        self.image_label = ui_helper.create_image_display_panel(middle_frame)
+        # Right panel - Image display and camera controls
+        right_panel = ttk.LabelFrame(middle_frame, text="Selected Image / Camera Preview")
+        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
+        
+        # Image display
+        self.image_label = ttk.Label(right_panel)
+        self.image_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Camera controls - initially hidden
+        self.camera_controls = tk.Frame(right_panel)
+        
+        # Capture button
+        self.capture_btn = ttk.Button(
+            self.camera_controls,
+            text="Capture Photo",
+            command=self.capture_from_camera
+        )
+        self.capture_btn.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Stop camera button
+        self.stop_camera_btn = ttk.Button(
+            self.camera_controls,
+            text="Stop Camera",
+            command=self.stop_camera
+        )
+        self.stop_camera_btn.pack(side=tk.LEFT, padx=5, pady=5)
         
         # Bottom frame - Configuration and results
         bottom_frame = tk.Frame(main_frame)
@@ -121,6 +153,10 @@ class TrashAnalyzerApp:
     
     def on_file_select(self, event):
         """Handle image selection from listbox"""
+        # If camera is active, stop it first
+        if self.camera_active:
+            self.stop_camera()
+        
         selection = self.file_listbox.curselection()
         if not selection:
             return
@@ -130,9 +166,126 @@ class TrashAnalyzerApp:
             self.current_image_index = index
             self._display_current_image()
     
+    def on_close(self):
+        """Handle window close event"""
+        # Stop camera if running
+        if self.camera_active:
+            self.stop_camera()
+        
+        # Close the window
+        self.root.destroy()
+    
+    # MARK: - Camera Functions
+    def toggle_camera(self):
+        """Toggle camera on/off"""
+        if self.camera_active:
+            self.stop_camera()
+        else:
+            self.start_camera()
+    
+    def start_camera(self):
+        """Start camera preview"""
+        # If camera is already active, do nothing
+        if self.camera_active:
+            return
+        
+        # Clear the current image display
+        self.image_label.config(image='')
+        
+        # Start camera
+        self.camera_cap = image_utils.start_camera_preview(
+            self.image_label,
+            self.config_widgets['status_var'],
+            self.root
+        )
+        
+        if self.camera_cap is None:
+            self.config_widgets['status_var'].set("Failed to start camera")
+            return
+        
+        # Show camera controls
+        self.camera_controls.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Update state
+        self.camera_active = True
+        self.preview_active[0] = True
+        
+        # Start preview loop
+        image_utils.update_camera_preview(self.image_label, self.camera_cap, self.preview_active)
+    
+    def stop_camera(self):
+        """Stop camera preview"""
+        # If camera is not active, do nothing
+        if not self.camera_active:
+            return
+        
+        # Stop preview loop
+        self.preview_active[0] = False
+        
+        # Release camera
+        image_utils.stop_camera_preview(self.camera_cap)
+        self.camera_cap = None
+        
+        # Hide camera controls
+        self.camera_controls.pack_forget()
+        
+        # Update state
+        self.camera_active = False
+        
+        # Clear display
+        self.image_label.config(image='')
+        
+        # Display current image if available
+        if self.current_image_index >= 0:
+            self._display_current_image()
+        
+        # Update status
+        self.config_widgets['status_var'].set("Camera stopped")
+    
+    def capture_from_camera(self):
+        """Capture image from camera preview"""
+        if not self.camera_active or self.camera_cap is None:
+            return
+        
+        # Create captured_images folder if it doesn't exist
+        captures_dir = os.path.join(".", "captured_images")
+        
+        # Capture the image
+        image_info = image_utils.capture_image_embedded(self.camera_cap, captures_dir)
+        
+        if not image_info:
+            self.config_widgets['status_var'].set("Failed to capture image")
+            return
+        
+        # Stop camera preview
+        self.stop_camera()
+        
+        # Clear existing images if this is the first one
+        if not self.images:
+            self.clear_images(ask=False)
+        
+        # Add to our list
+        self.images.append(image_info)
+        
+        # Add to listbox
+        self.file_listbox.insert(tk.END, image_info['name'])
+        
+        # Select this image
+        index = len(self.images) - 1
+        self.file_listbox.selection_set(index)
+        self.current_image_index = index
+        self._display_current_image()
+        
+        # Update status
+        self.config_widgets['status_var'].set("Image captured from camera")
+    
     # MARK: - Image Management
     def open_images(self):
         """Open image files from dialog"""
+        # If camera is active, stop it first
+        if self.camera_active:
+            self.stop_camera()
+            
         file_paths = ui_helper.get_image_paths_from_dialog()
         if not file_paths:
             return
@@ -162,43 +315,12 @@ class TrashAnalyzerApp:
         # Update status
         self.config_widgets['status_var'].set(f"Loaded {count} images")
     
-    def capture_from_camera(self):
-        """Capture image from camera"""
-        # Create captured_images folder if it doesn't exist
-        captures_dir = os.path.join(".", "captured_images")
-        
-        # Display status
-        self.config_widgets['status_var'].set("Opening camera...")
-        self.root.update()
-        
-        # Capture the image
-        image_info = image_utils.capture_image_from_camera(captures_dir)
-        
-        if not image_info:
-            self.config_widgets['status_var'].set("Camera capture failed or cancelled")
-            return
-        
-        # Clear existing images if this is the first one
-        if not self.images:
-            self.clear_images(ask=False)
-        
-        # Add to our list
-        self.images.append(image_info)
-        
-        # Add to listbox
-        self.file_listbox.insert(tk.END, image_info['name'])
-        
-        # Select this image
-        index = len(self.images) - 1
-        self.file_listbox.selection_set(index)
-        self.current_image_index = index
-        self._display_current_image()
-        
-        # Update status
-        self.config_widgets['status_var'].set("Image captured from camera")
-    
     def get_random_images(self):
         """Get random images from datasets directory"""
+        # If camera is active, stop it first
+        if self.camera_active:
+            self.stop_camera()
+            
         # Get random image paths
         image_paths = image_utils.get_random_images()
         
@@ -236,6 +358,10 @@ class TrashAnalyzerApp:
     
     def clear_images(self, ask=True):
         """Clear all loaded images"""
+        # If camera is active, stop it first
+        if self.camera_active:
+            self.stop_camera()
+            
         if ask and self.images:
             if not messagebox.askyesno("Clear Images", "Really clear all images?"):
                 return
@@ -266,12 +392,30 @@ class TrashAnalyzerApp:
     # MARK: - Image Analysis
     def analyze_image(self):
         """Analyze the current image using selected model"""
-        if self.current_image_index < 0:
+        # If camera is active, use the current camera frame
+        if self.camera_active and self.camera_cap is not None:
+            # Capture the current frame
+            ret, frame = self.camera_cap.read()
+            if not ret:
+                messagebox.showwarning("Camera Error", "Failed to capture frame from camera.")
+                return
+            
+            # Convert BGR to RGB for display
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Create a temporary image info
+            current_image = {
+                'path': None,
+                'name': 'camera_preview',
+                'data': frame,
+                'display': frame_rgb
+            }
+        elif self.current_image_index < 0:
             messagebox.showwarning("No Image", "Please select an image first.")
             return
-        
-        # Get current image
-        current_image = self.images[self.current_image_index]
+        else:
+            # Get current image from list
+            current_image = self.images[self.current_image_index]
         
         # Get prompt
         prompt = self.prompt_text.get("1.0", tk.END).strip()
