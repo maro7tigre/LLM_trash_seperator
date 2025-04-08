@@ -8,6 +8,9 @@ from tkinter import messagebox, ttk
 import threading
 import cv2
 import time
+import requests
+import json
+from datetime import datetime
 
 # Import helpers
 import ui_helper
@@ -33,8 +36,17 @@ class TrashAnalyzerApp:
         self.esp32_connected = False
         self.connection_thread = None
         
+        # ESP32 Subscription variables
+        self.esp32_subscription_active = False
+        self.esp32_subscription_ip = ""
+        self.esp32_polling_thread = None
+        self.esp32_poll_stop = False
+        
         # Initialize camera at startup
         image_utils.init_camera()
+        
+        # Create esp32_images directory if it doesn't exist
+        os.makedirs("esp32_images", exist_ok=True)
         
         # Get available providers and models
         self.providers = model_helper.get_available_providers()
@@ -71,16 +83,21 @@ class TrashAnalyzerApp:
         middle_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
         
         # Left panel - Image list
-        self.file_listbox = ui_helper.create_image_list_panel(
+        left_panel = ui_helper.create_image_list_panel(
             middle_frame,
             {
                 'upload': self.open_images,
                 'camera': self.toggle_camera,
                 'random': self.get_random_images,
                 'clear': self.clear_images,
-                'select': self.on_file_select
+                'select': self.on_file_select,
+                'subscribe_esp32': self.toggle_esp32_subscription  # New callback
             }
         )
+        
+        self.file_listbox = left_panel['listbox']
+        self.esp32_sub_var = left_panel['esp32_sub_var']
+        self.esp32_ip_entry = left_panel['esp32_ip_entry']
         
         # Right panel - Image display and camera controls
         right_panel = ttk.LabelFrame(middle_frame, text="Selected Image / Camera Preview")
@@ -168,6 +185,10 @@ class TrashAnalyzerApp:
     
     def on_close(self):
         """Handle window close event"""
+        # Stop ESP32 subscription if running
+        if self.esp32_subscription_active:
+            self.stop_esp32_subscription()
+            
         # Stop camera if running
         if self.camera_active:
             self.stop_camera()
@@ -186,6 +207,142 @@ class TrashAnalyzerApp:
         
         # Close the window
         self.root.destroy()
+    
+    # MARK: - ESP32 Subscription Functions
+    def toggle_esp32_subscription(self):
+        """Toggle ESP32 subscription on/off"""
+        if self.esp32_subscription_active:
+            self.stop_esp32_subscription()
+        else:
+            self.start_esp32_subscription()
+    
+    def start_esp32_subscription(self):
+        """Start subscribing to an ESP32 camera for new images"""
+        ip_address = self.esp32_ip_entry.get().strip()
+        
+        if not ip_address:
+            messagebox.showwarning("Invalid IP", "Please enter a valid ESP32 IP address")
+            return
+        
+        # Format the IP address
+        if not ip_address.startswith("http"):
+            ip_address = f"http://{ip_address}"
+        
+        # Test connection first
+        try:
+            response = requests.get(f"{ip_address}/", timeout=5)
+            if response.status_code != 200:
+                messagebox.showwarning("Connection Error", f"Could not connect to ESP32 at {ip_address}")
+                return
+        except Exception as e:
+            messagebox.showwarning("Connection Error", f"Error connecting to ESP32: {str(e)}")
+            return
+        
+        # Set subscription variables
+        self.esp32_subscription_ip = ip_address
+        self.esp32_subscription_active = True
+        self.esp32_poll_stop = False
+        
+        # Update UI
+        self.esp32_sub_var.set("Unsubscribe")
+        self.esp32_ip_entry.config(state="disabled")
+        self.config_widgets['status_var'].set(f"Subscribed to ESP32 at {ip_address}")
+        
+        # Start polling thread
+        self.esp32_polling_thread = threading.Thread(
+            target=self.poll_esp32_for_images,
+            daemon=True
+        )
+        self.esp32_polling_thread.start()
+    
+    def stop_esp32_subscription(self):
+        """Stop subscribing to ESP32 camera"""
+        # Set flag to stop polling thread
+        self.esp32_poll_stop = True
+        
+        # Wait for thread to terminate
+        if self.esp32_polling_thread and self.esp32_polling_thread.is_alive():
+            self.esp32_polling_thread.join(1.0)
+        
+        # Reset variables
+        self.esp32_subscription_active = False
+        self.esp32_polling_thread = None
+        
+        # Update UI
+        self.esp32_sub_var.set("Subscribe to ESP32")
+        self.esp32_ip_entry.config(state="normal")
+        self.config_widgets['status_var'].set("ESP32 subscription stopped")
+    
+    def poll_esp32_for_images(self):
+        """Poll ESP32 for new images in a separate thread"""
+        poll_interval = 2  # seconds
+        
+        while not self.esp32_poll_stop:
+            try:
+                # Check if a new image is available
+                response = requests.get(f"{self.esp32_subscription_ip}/check", timeout=5)
+                if response.status_code == 200:
+                    data = json.loads(response.text)
+                    if data.get("newImage", False):
+                        # Download the new image
+                        self.download_new_esp32_image()
+                        
+                        # Reset the new image flag on ESP32
+                        requests.get(f"{self.esp32_subscription_ip}/reset", timeout=5)
+            except Exception as e:
+                print(f"Error polling ESP32: {str(e)}")
+            
+            # Sleep for poll interval
+            for _ in range(poll_interval * 10):  # Allow for more responsive termination
+                if self.esp32_poll_stop:
+                    break
+                time.sleep(0.1)
+    
+    def download_new_esp32_image(self):
+        """Download a new image from the subscribed ESP32"""
+        try:
+            # Download the image
+            response = requests.get(f"{self.esp32_subscription_ip}/latest", timeout=10)
+            if response.status_code != 200:
+                return
+            
+            # Create a timestamp for the file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"esp32_{timestamp}.jpg"
+            filepath = os.path.join("esp32_images", filename)
+            
+            # Save the image
+            with open(filepath, "wb") as f:
+                f.write(response.content)
+            
+            # Add to image list (in main thread)
+            self.root.after(0, lambda: self.add_esp32_image_to_list(filepath, filename))
+            
+        except Exception as e:
+            print(f"Error downloading ESP32 image: {str(e)}")
+    
+    def add_esp32_image_to_list(self, filepath, filename):
+        """Add a downloaded ESP32 image to the image list (called in main thread)"""
+        # Load the image
+        image_info = image_utils.load_image_from_path(filepath)
+        if not image_info:
+            return
+        
+        # Add to our list
+        self.images.append(image_info)
+        
+        # Add to listbox
+        self.file_listbox.insert(tk.END, filename)
+        
+        # Select this image if no other is selected
+        if self.current_image_index < 0:
+            index = len(self.images) - 1
+            self.file_listbox.selection_set(index)
+            self.current_image_index = index
+            self._display_current_image()
+        
+        # Update status
+        self.config_widgets['status_var'].set(f"New ESP32 image received: {filename}")
     
     # MARK: - Camera Functions
     def connect_webcam(self, camera_type, camera_id):

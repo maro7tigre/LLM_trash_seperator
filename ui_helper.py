@@ -56,6 +56,23 @@ def create_image_list_panel(parent, callbacks):
         command=callbacks['clear']
     ).pack(side=tk.LEFT, padx=2)
     
+    # ESP32 Subscription controls
+    esp32_frame = ttk.Frame(left_panel)
+    esp32_frame.pack(fill=tk.X, padx=5, pady=5)
+    
+    ttk.Label(esp32_frame, text="ESP32 IP:").pack(side=tk.LEFT, padx=(0, 5))
+    esp32_ip_entry = ttk.Entry(esp32_frame, width=15)
+    esp32_ip_entry.pack(side=tk.LEFT)
+    esp32_ip_entry.insert(0, "192.168.137.6")  # Default IP
+    
+    # Subscribe/Unsubscribe button
+    esp32_sub_var = tk.StringVar(value="Subscribe to ESP32")
+    ttk.Button(
+        esp32_frame, 
+        textvariable=esp32_sub_var,
+        command=callbacks['subscribe_esp32']
+    ).pack(side=tk.LEFT, padx=5)
+    
     # Listbox for images
     list_frame = ttk.Frame(left_panel)
     list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -76,7 +93,11 @@ def create_image_list_panel(parent, callbacks):
     # Bind selection event
     file_listbox.bind('<<ListboxSelect>>', callbacks['select'])
     
-    return file_listbox
+    return {
+        'listbox': file_listbox,
+        'esp32_ip_entry': esp32_ip_entry,
+        'esp32_sub_var': esp32_sub_var
+    }
 
 def create_camera_controls_panel(parent, camera_callbacks):
     """Create camera control panel with dropdown and IP input"""
