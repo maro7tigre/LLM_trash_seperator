@@ -15,6 +15,8 @@ import numpy as np
 from PIL import ImageTk
 import threading
 import urllib.request
+import base64
+from io import BytesIO
 
 # Global camera object that persists throughout the application
 _camera = None
@@ -46,6 +48,41 @@ def load_image_from_path(path):
         }
     except Exception as e:
         print(f"Error loading image {path}: {e}")
+        return None
+
+def load_image_from_base64(base64_str, filename="base64_image.jpg"):
+    """Load an image from a base64 string and return BGR and RGB versions"""
+    try:
+        # Decode base64 to binary data
+        if isinstance(base64_str, str):
+            # Sometimes base64 strings can have header info, remove it if present
+            if "base64," in base64_str:
+                base64_str = base64_str.split("base64,")[1]
+            img_data = base64.b64decode(base64_str)
+        else:
+            img_data = base64_str
+            
+        # Convert to numpy array
+        nparr = np.frombuffer(img_data, np.uint8)
+        
+        # Decode the image
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if img is None:
+            print("Failed to decode base64 image")
+            return None
+        
+        # Convert BGR to RGB for display
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        
+        # Return information dictionary
+        return {
+            'path': None,  # No file path as it's from base64
+            'name': filename,
+            'data': img,       # Original BGR format for OpenCV
+            'display': img_rgb # RGB format for display
+        }
+    except Exception as e:
+        print(f"Error loading image from base64: {e}")
         return None
 
 # MARK: - Camera Functions
@@ -155,6 +192,12 @@ def test_esp32_connection(ip_address):
         if not ip_address.startswith("http"):
             # Add http:// prefix if missing
             ip_address = f"http://{ip_address}"
+            
+        # Try to access the root page first
+        response = urllib.request.urlopen(f"{ip_address}/")
+        if response.getcode() != 200:
+            print(f"Failed to connect to ESP32 at {ip_address}")
+            return False
             
         # If URL ends with slash, append the image path
         if ip_address.endswith("/"):
@@ -505,6 +548,37 @@ def get_current_frame():
     except Exception as e:
         print(f"Error getting frame: {e}")
         return None, None
+
+def save_base64_as_image(base64_str, save_path):
+    """
+    Save a base64 string as an image file
+    
+    Args:
+        base64_str: Base64 encoded image string
+        save_path: Path to save the image file
+        
+    Returns:
+        Boolean indicating success
+    """
+    try:
+        # Decode base64 to binary
+        if "base64," in base64_str:
+            # Remove data URL header if present
+            base64_str = base64_str.split("base64,")[1]
+            
+        image_data = base64.b64decode(base64_str)
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        
+        # Write binary data to file
+        with open(save_path, "wb") as f:
+            f.write(image_data)
+            
+        return True
+    except Exception as e:
+        print(f"Error saving base64 as image: {e}")
+        return False
 
 # MARK: - Random Image Functions
 def get_random_images(max_count=20):

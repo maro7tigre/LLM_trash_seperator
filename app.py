@@ -10,6 +10,7 @@ import cv2
 import time
 import requests
 import json
+import base64
 from datetime import datetime
 
 # Import helpers
@@ -45,8 +46,9 @@ class TrashAnalyzerApp:
         # Initialize camera at startup
         image_utils.init_camera()
         
-        # Create esp32_images directory if it doesn't exist
+        # Create required directories if they don't exist
         os.makedirs("esp32_images", exist_ok=True)
+        os.makedirs("esp32_base64", exist_ok=True)  # New directory for base64 data
         
         # Get available providers and models
         self.providers = model_helper.get_available_providers()
@@ -284,8 +286,8 @@ class TrashAnalyzerApp:
                 if response.status_code == 200:
                     data = json.loads(response.text)
                     if data.get("newImage", False):
-                        # Download the new image
-                        self.download_new_esp32_image()
+                        # Download the base64 data
+                        self.download_base64_from_esp32()
                         
                         # Reset the new image flag on ESP32
                         requests.get(f"{self.esp32_subscription_ip}/reset", timeout=5)
@@ -298,28 +300,48 @@ class TrashAnalyzerApp:
                     break
                 time.sleep(0.1)
     
-    def download_new_esp32_image(self):
-        """Download a new image from the subscribed ESP32"""
+    def download_base64_from_esp32(self):
+        """Download base64 data from the ESP32 camera"""
         try:
-            # Download the image
-            response = requests.get(f"{self.esp32_subscription_ip}/latest", timeout=10)
+            # Download the base64 data
+            response = requests.get(f"{self.esp32_subscription_ip}/base64", timeout=10)
             if response.status_code != 200:
+                print(f"Error downloading base64: status code {response.status_code}")
                 return
             
-            # Create a timestamp for the file
+            # Get the base64 string
+            base64_data = response.text
+            
+            # Create a timestamp for filenames
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"esp32_{timestamp}.jpg"
-            filepath = os.path.join("esp32_images", filename)
             
-            # Save the image
-            with open(filepath, "wb") as f:
-                f.write(response.content)
+            # Save the base64 data to file
+            base64_filename = f"esp32_base64_{timestamp}.txt"
+            base64_filepath = os.path.join("esp32_base64", base64_filename)
             
-            # Add to image list (in main thread)
-            self.root.after(0, lambda: self.add_esp32_image_to_list(filepath, filename))
+            with open(base64_filepath, "w") as f:
+                f.write(base64_data)
+            
+            # Convert base64 to image and save
+            try:
+                # Decode base64 data
+                image_data = base64.b64decode(base64_data)
+                
+                # Save as image file
+                image_filename = f"esp32_{timestamp}.jpg"
+                image_filepath = os.path.join("esp32_images", image_filename)
+                
+                with open(image_filepath, "wb") as f:
+                    f.write(image_data)
+                
+                # Add to image list (in main thread)
+                self.root.after(0, lambda: self.add_esp32_image_to_list(image_filepath, image_filename))
+                
+            except Exception as e:
+                print(f"Error converting base64 to image: {str(e)}")
             
         except Exception as e:
-            print(f"Error downloading ESP32 image: {str(e)}")
+            print(f"Error downloading base64 from ESP32: {str(e)}")
     
     def add_esp32_image_to_list(self, filepath, filename):
         """Add a downloaded ESP32 image to the image list (called in main thread)"""
