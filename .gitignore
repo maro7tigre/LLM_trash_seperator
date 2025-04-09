@@ -162,4 +162,4 @@ cython_debug/
 credentials.py
 complete_dataset/
 captured_images/
-esp32_images
+esp32_images/
