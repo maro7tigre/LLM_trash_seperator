@@ -9,7 +9,7 @@ import base64
 class ESP32CamClient:
     def __init__(self, root):
         self.root = root
-        self.root.title("ESP32-CAM Client")
+        self.root.title("ESP32-CAM Base64 Client")
         self.root.geometry("1000x600")
         self.root.resizable(True, True)
         
@@ -25,10 +25,7 @@ class ESP32CamClient:
         self.connect_btn = ttk.Button(frame_top, text="Connect", command=self.test_connection)
         self.connect_btn.pack(side=tk.LEFT, padx=5)
         
-        self.capture_jpeg_btn = ttk.Button(frame_top, text="Capture JPEG", command=self.capture_jpeg, state=tk.DISABLED)
-        self.capture_jpeg_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.capture_base64_btn = ttk.Button(frame_top, text="Capture Base64", command=self.capture_base64, state=tk.DISABLED)
+        self.capture_base64_btn = ttk.Button(frame_top, text="Capture Image", command=self.capture_base64, state=tk.DISABLED)
         self.capture_base64_btn.pack(side=tk.LEFT, padx=5)
         
         # Status label
@@ -90,69 +87,21 @@ class ESP32CamClient:
             
             if response.status_code == 200:
                 self.status_var.set(f"Connected to ESP32-CAM at {ip}")
-                self.capture_jpeg_btn.config(state=tk.NORMAL)
                 self.capture_base64_btn.config(state=tk.NORMAL)
             else:
                 self.status_var.set(f"Error: Received status code {response.status_code}")
-                self.capture_jpeg_btn.config(state=tk.DISABLED)
                 self.capture_base64_btn.config(state=tk.DISABLED)
                 
         except requests.exceptions.RequestException as e:
             self.status_var.set(f"Connection failed: {str(e)}")
-            self.capture_jpeg_btn.config(state=tk.DISABLED)
             self.capture_base64_btn.config(state=tk.DISABLED)
-            
-    def capture_jpeg(self):
-        if not self.esp32_url:
-            messagebox.showerror("Error", "No ESP32-CAM connected")
-            return
-            
-        self.status_var.set("Capturing JPEG image... (please wait)")
-        self.capture_jpeg_btn.config(state=tk.DISABLED)
-        self.capture_base64_btn.config(state=tk.DISABLED)
-        self.root.update()
-        
-        try:
-            # Use a longer timeout and stream the response
-            start_time = time.time()
-            response = requests.get(f"{self.esp32_url}/capture", timeout=20, stream=True)
-            
-            if response.status_code == 200:
-                # Display the image
-                img_data = BytesIO()
-                
-                # Stream content in chunks to avoid timeout issues
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        img_data.write(chunk)
-                
-                img_data.seek(0)
-                
-                try:
-                    pil_img = Image.open(img_data)
-                    self.display_image(pil_img)
-                    
-                    elapsed = time.time() - start_time
-                    self.status_var.set(f"JPEG image captured successfully ({pil_img.width}x{pil_img.height}, {img_data.getbuffer().nbytes} bytes, {elapsed:.1f}s)")
-                except Exception as e:
-                    self.status_var.set(f"Error processing image: {str(e)}")
-            else:
-                self.status_var.set(f"Error: Received status code {response.status_code}")
-                
-        except requests.exceptions.RequestException as e:
-            self.status_var.set(f"Image capture failed: {str(e)}")
-            
-        finally:
-            self.capture_jpeg_btn.config(state=tk.NORMAL)
-            self.capture_base64_btn.config(state=tk.NORMAL)
     
     def capture_base64(self):
         if not self.esp32_url:
             messagebox.showerror("Error", "No ESP32-CAM connected")
             return
             
-        self.status_var.set("Capturing Base64 image... (please wait)")
-        self.capture_jpeg_btn.config(state=tk.DISABLED)
+        self.status_var.set("Capturing image... (please wait)")
         self.capture_base64_btn.config(state=tk.DISABLED)
         self.root.update()
         
@@ -176,15 +125,14 @@ class ESP32CamClient:
                 self.decode_base64(base64_text)
                 
                 elapsed = time.time() - start_time
-                self.status_var.set(f"Base64 image captured successfully ({len(base64_text)} chars, {elapsed:.1f}s)")
+                self.status_var.set(f"Image captured successfully ({len(base64_text)} chars, {elapsed:.1f}s)")
             else:
                 self.status_var.set(f"Error: Received status code {response.status_code}")
                 
         except requests.exceptions.RequestException as e:
-            self.status_var.set(f"Base64 capture failed: {str(e)}")
+            self.status_var.set(f"Image capture failed: {str(e)}")
             
         finally:
-            self.capture_jpeg_btn.config(state=tk.NORMAL)
             self.capture_base64_btn.config(state=tk.NORMAL)
     
     def decode_base64(self, base64_text=None):
