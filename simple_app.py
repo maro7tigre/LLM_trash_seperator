@@ -20,7 +20,7 @@ class ESP32CamClient:
         ttk.Label(frame_top, text="ESP32-CAM IP:").pack(side=tk.LEFT)
         self.ip_entry = ttk.Entry(frame_top, width=15)
         self.ip_entry.pack(side=tk.LEFT, padx=5)
-        self.ip_entry.insert(0, "192.168.1.") # Default prefix
+        self.ip_entry.insert(0, "192.168.100.228") # Default prefix
         
         self.connect_btn = ttk.Button(frame_top, text="Connect", command=self.test_connection)
         self.connect_btn.pack(side=tk.LEFT, padx=5)
@@ -107,8 +107,9 @@ class ESP32CamClient:
         
         try:
             # Use a longer timeout and stream the response
+            # Updated to use /photo endpoint instead of /base64
             start_time = time.time()
-            response = requests.get(f"{self.esp32_url}/base64", timeout=20)
+            response = requests.get(f"{self.esp32_url}/photo", timeout=20)
             
             if response.status_code == 200:
                 # Get the Base64 text content
