@@ -6,11 +6,12 @@ from io import BytesIO
 import time
 import base64
 import json
+import threading
 
 class ESP32CamClient:
     def __init__(self, root):
         self.root = root
-        self.root.title("ESP32-CAM with Gemini AI")
+        self.root.title("ESP32-CAM Trash Classification Viewer")
         self.root.geometry("1000x700")
         self.root.resizable(True, True)
         
@@ -23,26 +24,13 @@ class ESP32CamClient:
         self.ip_entry.pack(side=tk.LEFT, padx=5)
         self.ip_entry.insert(0, "192.168.100.228") # Default prefix
         
-        self.connect_btn = ttk.Button(frame_top, text="Connect", command=self.test_connection)
+        self.connect_btn = ttk.Button(frame_top, text="Connect", command=self.connect_and_monitor)
         self.connect_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.capture_btn = ttk.Button(frame_top, text="Capture & Analyze", command=self.capture_json, state=tk.DISABLED)
-        self.capture_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.capture_only_btn = ttk.Button(frame_top, text="Capture Only", command=self.capture_without_ai, state=tk.DISABLED)
-        self.capture_only_btn.pack(side=tk.LEFT, padx=5)
         
         # Status label
         self.status_var = tk.StringVar(value="Enter ESP32-CAM IP address and click Connect")
         self.status_label = ttk.Label(root, textvariable=self.status_var, foreground="blue")
         self.status_label.pack(pady=5)
-        
-        # Note about AI processing
-        self.ai_frame = ttk.Frame(root)
-        self.ai_frame.pack(fill=tk.X, padx=10)
-        
-        ttk.Label(self.ai_frame, text="Note: AI processing happens on the ESP32-CAM. Check its serial output for results.", 
-                 font=("Arial", 11), foreground="gray").pack(side=tk.LEFT, padx=5)
         
         # Main display area with two panes
         self.main_pane = ttk.PanedWindow(root, orient=tk.HORIZONTAL)
@@ -65,16 +53,14 @@ class ESP32CamClient:
                                highlightbackground="darkgray")
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Add decode button below text area
-        self.decode_btn = ttk.Button(self.text_frame, text="Extract Image from JSON", 
-                                    command=self.extract_image_from_json, state=tk.DISABLED)
-        self.decode_btn.pack(pady=5)
-        
         # Image placeholder
         self.display_placeholder()
         
-        # ESP32 URL
+        # ESP32 URL and monitoring
         self.esp32_url = None
+        self.monitoring = False
+        self.monitor_thread = None
+        self.last_json = None
         
     def display_placeholder(self):
         self.canvas.delete("all")
@@ -82,7 +68,8 @@ class ESP32CamClient:
                                self.canvas.winfo_height()//2 or 150, 
                                text="Image will appear here", font=("Arial", 14))
         
-    def test_connection(self):
+    def connect_and_monitor(self):
+        """Connect to ESP32 and start monitoring for new images"""
         ip = self.ip_entry.get().strip()
         if not ip:
             messagebox.showerror("Error", "Please enter the ESP32-CAM IP address")
@@ -98,84 +85,66 @@ class ESP32CamClient:
             
             if response.status_code == 200:
                 self.status_var.set(f"Connected to ESP32-CAM at {ip}")
-                self.capture_btn.config(state=tk.NORMAL)
-                self.capture_only_btn.config(state=tk.NORMAL)
+                
+                # Start monitoring thread
+                self.start_monitoring()
             else:
                 self.status_var.set(f"Error: Received status code {response.status_code}")
-                self.capture_btn.config(state=tk.DISABLED)
-                self.capture_only_btn.config(state=tk.DISABLED)
                 
         except requests.exceptions.RequestException as e:
             self.status_var.set(f"Connection failed: {str(e)}")
-            self.capture_btn.config(state=tk.DISABLED)
-            self.capture_only_btn.config(state=tk.DISABLED)
     
-    def capture_json(self):
-        """Capture image with AI analysis"""
-        self._capture_image(ai=True)
+    def start_monitoring(self):
+        """Start a thread to monitor for new JSON data"""
+        if not self.monitoring and self.esp32_url:
+            self.monitoring = True
+            self.monitor_thread = threading.Thread(target=self.monitor_esp32)
+            self.monitor_thread.daemon = True
+            self.monitor_thread.start()
+            self.status_var.set("Monitoring ESP32-CAM for new images...")
     
-    def capture_without_ai(self):
-        """Capture image without AI analysis"""
-        self._capture_image(ai=False)
+    def monitor_esp32(self):
+        """Continuously check for new images"""
+        while self.monitoring:
+            try:
+                # Request the latest photo
+                response = requests.get(f"{self.esp32_url}/photo", timeout=5)
+                
+                if response.status_code == 200:
+                    # Get the JSON content
+                    json_text = response.text
+                    
+                    # Compare with the last received JSON
+                    if json_text != self.last_json:
+                        self.last_json = json_text
+                        
+                        # Use the main thread to update the UI
+                        self.root.after(0, lambda: self.update_ui(json_text))
+                
+            except requests.exceptions.RequestException:
+                # Just skip this iteration if there's an error
+                pass
+                
+            # Check every 1 second
+            time.sleep(1)
     
-    def _capture_image(self, ai=True):
-        """Common function for capturing images with or without AI"""
-        if not self.esp32_url:
-            messagebox.showerror("Error", "No ESP32-CAM connected")
-            return
-            
-        self.status_var.set("Capturing image... (please wait)")
-        self.capture_btn.config(state=tk.DISABLED)
-        self.capture_only_btn.config(state=tk.DISABLED)
-        self.root.update()
+    def update_ui(self, json_text):
+        """Update the UI with new JSON data"""
+        # Update the text area
+        self.text_area.delete(1.0, tk.END)
+        self.text_area.insert(tk.END, json_text)
         
-        try:
-            # Use a longer timeout and stream the response
-            start_time = time.time()
-            url = f"{self.esp32_url}/photo"
-            
-            # Add ai parameter if needed
-            if not ai:
-                url += "?ai=false"
-                
-            response = requests.get(url, timeout=30)  # Longer timeout for AI processing
-            
-            if response.status_code == 200:
-                # Get the JSON content
-                json_text = response.text
-                
-                # Display the JSON text
-                self.text_area.delete(1.0, tk.END)
-                self.text_area.insert(tk.END, json_text)
-                
-                # Enable decode button
-                self.decode_btn.config(state=tk.NORMAL)
-                
-                # Automatically extract image and display
-                self.extract_image_from_json()
-                
-                # Simply note if AI was used (results will be in ESP32's serial output)
-                if ai:
-                    self.status_var.set(f"Image captured with AI processing (check ESP32-CAM serial output for results)")
-                else:
-                    self.status_var.set(f"Image captured without AI processing")
-                
-                elapsed = time.time() - start_time
-                self.status_var.set(f"Image captured successfully ({len(json_text)} chars, {elapsed:.1f}s)")
-            else:
-                self.status_var.set(f"Error: Received status code {response.status_code}")
-                
-        except requests.exceptions.RequestException as e:
-            self.status_var.set(f"Image capture failed: {str(e)}")
-            
-        finally:
-            self.capture_btn.config(state=tk.NORMAL)
-            self.capture_only_btn.config(state=tk.NORMAL)
+        # Extract and display the image
+        self.extract_image_from_json(json_text)
+        
+        # Update status
+        self.status_var.set("New image received")
     
-    def extract_image_from_json(self):
+    def extract_image_from_json(self, json_text=None):
         """Extract Base64 image from JSON and display it"""
-        # Get the JSON text from text area
-        json_text = self.text_area.get(1.0, tk.END).strip()
+        if json_text is None:
+            # Get the JSON text from text area
+            json_text = self.text_area.get(1.0, tk.END).strip()
             
         if not json_text:
             self.status_var.set("No JSON data to process")
@@ -189,12 +158,14 @@ class ESP32CamClient:
             if "contents" in json_data and len(json_data["contents"]) > 0:
                 parts = json_data["contents"][0]["parts"]
                 base64_data = None
+                text_prompt = None
                 
-                # Find the part with inline_data
+                # Find the part with inline_data and text
                 for part in parts:
                     if "inline_data" in part:
                         base64_data = part["inline_data"]["data"]
-                        break
+                    elif "text" in part:
+                        text_prompt = part["text"]
                 
                 if base64_data:
                     # Decode Base64 to binary
@@ -207,7 +178,7 @@ class ESP32CamClient:
                     # Display the image
                     self.display_image(pil_img)
                     
-                    self.status_var.set(f"Image extracted successfully: {pil_img.width}x{pil_img.height}")
+                    self.status_var.set(f"Image extracted. Prompt: {text_prompt}")
                 else:
                     self.status_var.set("No Base64 image data found in JSON")
                     self.display_placeholder()
