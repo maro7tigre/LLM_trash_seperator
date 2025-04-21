@@ -27,6 +27,10 @@ class ESP32CamClient:
         self.connect_btn = ttk.Button(frame_top, text="Connect", command=self.connect_and_monitor)
         self.connect_btn.pack(side=tk.LEFT, padx=5)
         
+        # Add trigger button
+        self.trigger_btn = ttk.Button(frame_top, text="Take Photo", command=self.trigger_photo, state=tk.DISABLED)
+        self.trigger_btn.pack(side=tk.LEFT, padx=5)
+        
         # Status label
         self.status_var = tk.StringVar(value="Enter ESP32-CAM IP address and click Connect")
         self.status_label = ttk.Label(root, textvariable=self.status_var, foreground="blue")
@@ -67,6 +71,27 @@ class ESP32CamClient:
         self.canvas.create_text(self.canvas.winfo_width()//2 or 200, 
                                self.canvas.winfo_height()//2 or 150, 
                                text="Image will appear here", font=("Arial", 14))
+    
+    def trigger_photo(self):
+        """Send trigger command to ESP32-CAM to take a new photo"""
+        if not self.esp32_url:
+            messagebox.showerror("Error", "Not connected to ESP32-CAM")
+            return
+            
+        self.status_var.set("Triggering photo capture...")
+        self.root.update()
+        
+        try:
+            # Send request to the trigger endpoint
+            response = requests.get(f"{self.esp32_url}/trigger", timeout=5)
+            
+            if response.status_code == 200:
+                self.status_var.set("Photo capture triggered successfully")
+            else:
+                self.status_var.set(f"Trigger failed: Status code {response.status_code}")
+                
+        except requests.exceptions.RequestException as e:
+            self.status_var.set(f"Trigger failed: {str(e)}")
         
     def connect_and_monitor(self):
         """Connect to ESP32 and start monitoring for new images"""
@@ -85,6 +110,9 @@ class ESP32CamClient:
             
             if response.status_code == 200:
                 self.status_var.set(f"Connected to ESP32-CAM at {ip}")
+                
+                # Enable the trigger button
+                self.trigger_btn.config(state=tk.NORMAL)
                 
                 # Start monitoring thread
                 self.start_monitoring()
